@@ -97,8 +97,10 @@ def populate_fields(url, fields, **replace):
 def collect_article(uuid, article_apis=None, article_stats=False, article_cache=None, key='', cookie='', backoff=250):
 
     if not article_apis:
+        logging.debug('No APIs for %s',uuid)
         return # nowhere to get articles from
     if not article_stats and not article_cache:
+        logging.debug('No stats or caching for %s',uuid)
         return # no need to do anything as there will be no result
 
     url_name = random.choice(article_apis)
@@ -176,8 +178,9 @@ def collect_main(apis,since,repeat,
                     # don't print out the very first requests, or we will slurp everything
                     for new_id in new_ids:
                         print( '%s,%s,%s,0' % ( now.strftime("%Y-%m-%dT%H:%M:%S.%fZ"), url_name, new_id ) )
-                        asyncio.async(collect_article(new_id, 
-                                                      article_apis, article_stats, article_cache,
+                        for article_api in article_apis:
+                            asyncio.async(collect_article(new_id, 
+                                                      [article_api], article_stats, article_cache,
                                                       key=key, cookie=cookie))
 
                 last_time_ids[url_name] = ids_included
@@ -189,7 +192,7 @@ def collect_main(apis,since,repeat,
 
 loop = asyncio.get_event_loop()
 
-if args.articles:
+if args.articles or args.article_stats:
     article_apis = ARTICLE_URL_KEYS
 else:
     article_apis = []

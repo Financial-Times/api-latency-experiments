@@ -9,14 +9,21 @@ import time
 import sys
 import csv
 import os
+import re
 import argparse
 import ftapi
 
 UUID_LENGTH = 36
+UUID_REGEX = re.compile('([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})')
+
+DATE_REGEX = re.compile('([0-9]{4}).([0-9]{2}).([0-9]{2}).([0-9]{2}).([0-9]{2}).([0-9]{2}).([0-9]+)')
 
 parser = argparse.ArgumentParser(description="Discover the article types and ages for articles collected by collect.py")
 
 parser.add_argument('csv', type=str, help='Input CSV file')
+parser.add_argument('-b', '--base', type=str, help='Calculate intervals relative to which point', choices=['published_date', 'first_appearance', 'first_external_mention'], default='published_date')
+parser.add_argument('-m', '--mention-file', type=str, help='Log file to look for mentions (use with -b first_external_mention)')
+parser.add_argument('-z', '--zeroes', action='store_true', help='Include results with zero interval (default: discard these)')
 parser.add_argument('-p', '--poll-interval', type=int, help='Seconds to sleep between collecting', default=1)
 parser.add_argument('-k', '--key', type=str, help='FT API key (default: ~/.ft_api_key)', default=None)
 parser.add_argument('-C', '--cache', type=str, help='Cache directory for article responses', default=None)
@@ -34,6 +41,18 @@ if not args.key:
         args.key = open(os.path.expanduser('~/.ft_api_key'),'r').read().strip()
     except IOError:
         args.key = None
+
+mentions={}
+if args.mention_file:
+    for line in open( args.mention_file,'r' ).readlines():
+        for match in UUID_REGEX.findall(line):
+            uuid = match.lower()
+            if uuid not in mentions:
+                mentions[uuid]=[]
+            mentions[uuid].append(line.strip())
+
+if args.base == 'first_external_mention' and not args.mention_file:
+    raise Exception('No file supplied for external mentions: expected -m <filename>')
 
 def really_dump(o):
     try:
@@ -105,17 +124,26 @@ not_content = set()
 for line in list(data):
     when = datetime.datetime.strptime(line[0], "%Y-%m-%dT%H:%M:%S.%fZ")
     src = line[1]
-    for uuid in line[2:]:
+    line_uuids = []
+    line_extras = []
+    for field in line[2:]:
         # the old version had multiple uuids per line, this was quite a bad idea
-        # but the 3 week data set does it this way
+        # but the 3 week data set does it this way.
+        # Therefore, spot UUIDs in fields and collect other fields into 'extras'
         # FIXME: remove support for the old data set
-        if len(uuid)==UUID_LENGTH and uuid not in not_content:
+        if len(field)==UUID_LENGTH:
+            line_uuids.append(field)
+        else:
+            line_extras.append(field)
+
+    for uuid in line_uuids:
+        if uuid not in not_content:
             try:
                 if uuid not in uuids:
                     content = Item(id=uuid)
                     logging.debug( 'Found %s' % content )
                     uuids[uuid] = [content]
-                uuids[uuid].append( (when,src) ) # FIXME: relative time
+                uuids[uuid].append( (when,src,line_extras) )
             except ValueError as e:
                 logging.debug(e)
                 logging.info('%s was not content' % uuid)
@@ -125,13 +153,43 @@ DAY = datetime.timedelta(1,0,0)
 
 for uuid,result in uuids.items():
     item = result[0]
-    for when,src in result[1:]:
-        interval = when - item.published_date
-        if interval < DAY:
+    for when,src,extras in result[1:]:
+
+        interval = None
+
+        if args.base == 'first_appearance':
+            interval = when - result[1][0]
+        elif args.base == 'first_external_mention':
+            if uuid not in mentions:
+                logging.debug('No mentions of %s, discarding' % uuid)
+            else:
+                logging.debug('Finding first mention of %s' % uuid)
+                first_time = None
+                for line in mentions[uuid]:
+                    logging.debug(line)
+                    mention_time = DATE_REGEX.match(line)
+                    if not mention_time:
+                        logging.debug("Don't understand line %s" % uuid)
+                    else:
+                        this_time = datetime.datetime(int(mention_time.group(1)),
+                                        int(mention_time.group(2)),
+                                        int(mention_time.group(3)),
+                                        int(mention_time.group(4)),
+                                        int(mention_time.group(5)),
+                                        int(mention_time.group(6)),
+                                        int((mention_time.group(7)+'000000')[:6]))
+                        if first_time is None or this_time < first_time:
+                            first_time = this_time
+                interval = when - first_time
+        else:
+            interval = when - item.published_date
+
+        if interval is not None and interval < DAY:
             if interval > datetime.timedelta(0,0,0):
-                print('%s,%s,%s,%s,%s' % (uuid,src,item.origin,interval,item.title))
+                print('%s,%s,%s,%s,%s,%s' % (uuid,src,item.origin,interval,','.join(extras),item.title))
+            elif interval == datetime.timedelta(0,0,0):
+                if args.zeroes:
+                    print('%s,%s,%s,%s,%s,%s' % (uuid,src,item.origin,interval,','.join(extras),item.title))
             else:
                 # str(negative-interval) is unhelpful
-                print('%s,%s,%s,-%s,%s' % (uuid,src,item.origin,-interval,item.title))
-
-
+                print('%s,%s,%s,-%s,%s,%s' % (uuid,src,item.origin,-interval,','.join(extras),item.title))

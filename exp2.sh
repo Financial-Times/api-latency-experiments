@@ -2,9 +2,11 @@
 
 ## Experiment 2
 
-src/collect.py API-V1 -a -C cache/ > results/exp2-1.csv
+# 720 = 1h
 
-#src/analyse.py exp-1-1.csv > exp2-2.csv
+src/collect.py --debug DEBUG -A -n 72000 -C cache/ API-V1 >> results/exp2-1.csv
 
-#src/bucket.py exp-1-2.csv > exp2-3.csv
+src/analyse.py --debug DEBUG -C cache/ results/exp2-1.csv > results/exp2-2.csv
+
+src/bucket.py results/exp2-2.csv > results/exp2-3.csv
 
