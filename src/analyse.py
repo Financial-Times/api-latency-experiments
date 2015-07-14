@@ -12,6 +12,8 @@ import os
 import re
 import argparse
 import ftapi
+import pygal
+import math
 
 UUID_LENGTH = 36
 UUID_REGEX = re.compile('([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})')
@@ -27,6 +29,7 @@ parser.add_argument('-z', '--zeroes', action='store_true', help='Include results
 parser.add_argument('-p', '--poll-interval', type=int, help='Seconds to sleep between collecting', default=1)
 parser.add_argument('-k', '--key', type=str, help='FT API key (default: ~/.ft_api_key)', default=None)
 parser.add_argument('-C', '--cache', type=str, help='Cache directory for article responses', default=None)
+parser.add_argument('-g', '--graph', type=str, help='Render SVG graph to this file')
 parser.add_argument('--debug', type=str, help='Set log level (default:WARN)', default=None)
 
 args = parser.parse_args()
@@ -151,8 +154,15 @@ for line in list(data):
 
 DAY = datetime.timedelta(1,0,0)
 
-for uuid,result in uuids.items():
+RESULTS = {}
+GROUPS = set()
+TITLES = {}
+
+for uuid,result in sorted(list(uuids.items())):
     item = result[0]
+    TITLES[uuid] = item.title
+    RESULTS[uuid]={}
+
     for when,src,extras in result[1:]:
 
         interval = None
@@ -184,12 +194,56 @@ for uuid,result in uuids.items():
         else:
             interval = when - item.published_date
 
+        if len(extras)>0:
+            group = str(extras[0])+':'+item.origin+':'+src
+        else:
+            group = '0'+':'+item.origin+':'+src
+        GROUPS.add(group)
+        if group not in RESULTS[uuid]:
+            RESULTS[uuid][group] = []
+
         if interval is not None and interval < DAY:
+            safe_title = item.title.replace('"',r'\"')
             if interval > datetime.timedelta(0,0,0):
-                print('%s,%s,%s,%s,%s,%s' % (uuid,src,item.origin,interval,','.join(extras),item.title))
+                print('%s,%s,%s,%s,%s,"%s"' % (uuid,src,item.origin,interval,','.join(extras),safe_title))
             elif interval == datetime.timedelta(0,0,0):
                 if args.zeroes:
-                    print('%s,%s,%s,%s,%s,%s' % (uuid,src,item.origin,interval,','.join(extras),item.title))
+                    print('%s,%s,%s,%s,%s,"%s"' % (uuid,src,item.origin,interval,','.join(extras),safe_title))
             else:
                 # str(negative-interval) is unhelpful
-                print('%s,%s,%s,-%s,%s,%s' % (uuid,src,item.origin,-interval,','.join(extras),item.title))
+                print('%s,%s,%s,-%s,%s,"%s"' % (uuid,src,item.origin,-interval,','.join(extras),safe_title))
+
+            RESULTS[uuid][group].append( interval )
+
+if args.graph:
+    filter = re.compile('.+:METHODE')
+
+    x = {}
+    xy = pygal.XY(stroke=False,
+                  width=800,
+                  height=450,
+                  legend_at_bottom=True,
+                  truncate_legend=40,
+                  dots_size=1.5)
+
+    my_groups = [g for g in reversed(sorted(GROUPS)) if filter.match(g)]
+
+    for i,group in enumerate(my_groups):
+        r = []
+        for uuid, g in sorted(list(RESULTS.items())):
+            if group in g and g[group]:
+                for interval in g[group]:
+                    if uuid not in x:
+                        x[uuid] = len(x)
+                    s = interval.days*86400+interval.seconds+interval.microseconds*0.000001
+                    if s>0:
+                        r.append( (x[uuid] + (i+1)*(1.0/(len(my_groups)+2)), s) )
+
+        if r:
+            xy.add(group,r)
+
+    logging.info('x-values for graph are:')
+    for uuid in sorted(list(x.keys())):
+        logging.info('%s = %s : %s' % (uuid,x[uuid],TITLES[uuid]))
+
+    xy.render_to_file(args.graph)

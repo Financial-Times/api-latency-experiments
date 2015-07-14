@@ -3,10 +3,11 @@
 
 import logging
 import csv
-import os
+import os,sys
 import re
 import argparse
 import math
+import pygal
 
 parser = argparse.ArgumentParser(description="Distribute results of analyse.py by age buckets")
 
@@ -14,8 +15,10 @@ parser.add_argument('csv', type=str, help='Input CSV file')
 parser.add_argument('-s', '--bucket-size', type=float, help='Bucket size in seconds', default=5)
 parser.add_argument('-l', '--limit', type=int, help='Maximum number of buckets (default:all)', default=0)
 parser.add_argument('-n', '--not-found', action='store_true', help='Include lines with 4xx status (default: exclude)')
-parser.add_argument('-c', '--cumulative', action='store_true', help='Values accumulate')
-parser.add_argument('-p', '--percentage', action='store_true', help='Report values as % of lines of each type')
+parser.add_argument('-c', '--cumulative', action='store_true', help='Report accumulation of values')
+parser.add_argument('-p', '--percentage', action='store_true', help='Report values as a percentage of matching results')
+parser.add_argument('-L', '--last', action='store_true', help='For each item+method, use the last entry supplied (default: first)')
+parser.add_argument('-g', '--graph', type=str, help='Render SVG graph to this file')
 parser.add_argument('--debug', type=str, help='Set log level (default:WARN)', default=None)
 
 args = parser.parse_args()
@@ -31,21 +34,24 @@ BUCKETS = {}
 
 max_bucket = 0
 
-# Only consider the first sighting of each item in each method
-already_seen = set()
+lines_to_include = {}
 
-for line in list(data):
+for line in data:
+    key = ':'.join(line[:3])+':'.join(line[4:-1])
+
+    if args.last:
+        lines_to_include[key] = line
+    elif key not in lines_to_include:
+        lines_to_include[key] = line
+
+for line in lines_to_include.values():
     if len(line)<5:
         continue
 
     if line[2]=='UNKNOWN':
         continue
 
-    method = '%s:%s' % (line[1], line[2])
-
-    if (line[0]+method) in already_seen:
-        logging.debug('Already seen %s' % line[0]+method)
-        continue
+    method = '%s:%s:%s' % (line[1], line[2], ':'.join(line[4:-1]))
 
     interval = re.match('(-?)([0-9]+):([0-9]+):([0-9.]+)',line[3])
 
@@ -56,7 +62,6 @@ for line in list(data):
     elif status.startswith('4') and not args.not_found:
         logging.debug("Discarding 4xx line %s" % line)
     else:
-        already_seen.add(line[0]+method)
         seconds = float(interval.group(4)) + int(interval.group(3))*60 + int(interval.group(2))*60*60
         if interval.group(1) == '-':
             seconds = -seconds
@@ -96,6 +101,7 @@ counts = [0] * len(methods)
 if not args.limit:
     args.limit = max_bucket + 1
 
+RESULTS = []
 for b in range(0,args.limit):
     for i,method in enumerate(methods):
         if b in BUCKETS[method]:
@@ -115,4 +121,20 @@ for b in range(0,args.limit):
             else:
                 prop_counts.append( str(count) )
 
+    RESULTS.append( (b*args.bucket_size,) + tuple(prop_counts) )
     print('%s,%s' % (b*args.bucket_size, ','.join(prop_counts)))
+
+if args.graph:
+    xy = pygal.XY(width=800,
+                  height=450,
+                  show_dots=False,
+                  legend_at_bottom=True,
+                  truncate_legend=40)
+    xy.title = 'title'
+    for i,method in enumerate(methods):
+        line = []
+        for point in RESULTS:
+            line.append( (float(point[0]), float(point[i+1])) )
+        xy.add(method, line)
+    xy.render_to_file(args.graph)
+
